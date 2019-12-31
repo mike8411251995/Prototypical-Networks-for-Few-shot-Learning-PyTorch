@@ -1,6 +1,7 @@
 {
-    "python.pythonPath": "/home/mike/anaconda3/envs/torch/bin/python",
+    "python.pythonPath": "/home/mike/anaconda3/envs/AMP/bin/python",
     "files.watcherExclude": {
-        "**/dataset/**": true
+        "**/dataset/**": true,
+        "**/datasets/**": true
     }
 }

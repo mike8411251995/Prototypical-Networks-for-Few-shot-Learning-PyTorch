@@ -10,6 +10,10 @@ import numpy as np
 import torch
 import os
 
+class Namespace:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
 
 def init_seed(opt):
     '''
@@ -198,7 +202,8 @@ def main():
     '''
     Initialize everything and train
     '''
-    options = get_parser().parse_args()
+    # options = get_parser().parse_args()
+    options = Namespace(classes_per_it_tr=60, classes_per_it_val=5, cuda=True, dataset_root='dataset', epochs=100, experiment_root='output', iterations=100, learning_rate=0.001, lr_scheduler_gamma=0.5, lr_scheduler_step=20, manual_seed=7, num_query_tr=5, num_query_val=15, num_support_tr=5, num_support_val=5)
     if not os.path.exists(options.experiment_root):
         os.makedirs(options.experiment_root)
 

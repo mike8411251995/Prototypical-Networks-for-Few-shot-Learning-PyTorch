@@ -2,6 +2,7 @@
 dataset/
 datasets/
 output/
+run_all/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

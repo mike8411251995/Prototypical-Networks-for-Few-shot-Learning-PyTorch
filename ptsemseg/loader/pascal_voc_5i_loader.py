@@ -12,11 +12,15 @@ import glob
 from PIL import Image
 from tqdm import tqdm
 from torch.utils import data
+import torch.nn.functional as F
 from torchvision import transforms
 from ptsemseg.loader.oslsm import ss_datalayer
 from ptsemseg.loader import pascalVOCLoader
 import yaml
 import cv2
+
+from dataloaders import custom_transforms_image as tr_image
+from dataloaders import custom_transforms as tr_sample
 
 class pascalVOC5iLoader(pascalVOCLoader):
     """Data loader for the Pascal VOC 5i Few-shot semantic segmentation dataset.
@@ -25,6 +29,8 @@ class pascalVOC5iLoader(pascalVOCLoader):
     def __init__(
         self,
         root,
+        args,
+        deeplab_model,
         split="val",
         is_transform=False,
         img_size=512,
@@ -67,6 +73,9 @@ class pascalVOC5iLoader(pascalVOCLoader):
                                            k_shot)
         self.prefix_lbl = 'SegmentationClass/pre_encoded/'
         self.current_fold = fold
+
+        self.args = args
+        self.deeplab_model = deeplab_model
 
     def parse_file(self, pth_txt, k_shot):
         files = []
@@ -117,34 +126,84 @@ class pascalVOC5iLoader(pascalVOCLoader):
 
     def __getitem__(self, index):
         pair = self.oslsm_files[index]
-        #self.out = self.PLP.load_next_frame(try_mode=False)
-        original_im1 = []
-        im1 = []
-        lbl1= []
 
-#        original_im2 = self.out['second_img'][0]
-        original_im2 = cv2.imread(self.root+pair[1])
-        original_im2 = cv2.resize(original_im2, self.img_size)
+        qry_img_orig = Image.open(self.root+pair[1]) # before transform
 
-        im2 = np.asarray(cv2.imread(self.root+pair[1])[:,:,::-1], dtype=np.float32)
-        lbl2 = cv2.imread(self.root+pair[1].replace('JPEGImages', self.prefix_lbl).replace('jpg', 'png') , 0)
-        lbl2 = np.asarray(lbl2, dtype=np.int32)
-        lbl2 = self.map_labels(lbl2, int(pair[-1]))
+        qry_lbl_orig = cv2.imread(self.root+pair[1].replace('JPEGImages', self.prefix_lbl).replace('jpg', 'png') , 0)
+        qry_lbl_orig = np.asarray(qry_lbl_orig, dtype=np.int32)
+        qry_lbl_orig = self.map_labels(qry_lbl_orig, int(pair[-1]))
+        qry_lbl_orig = Image.fromarray(qry_lbl_orig)
 
-        im2, lbl2 = self.transform(im2, lbl2)
+        qry_transformed = self.transform_sample({'image': qry_img_orig, 'label': qry_lbl_orig})
+        qry_img = qry_transformed['image']
+        qry_lbl = qry_transformed['label']
+
+        qry_feat = self.deeplab_model.module.extract_pixel_feature(qry_img[None, :].to('cuda'))
+        qry_lbl = F.interpolate(qry_lbl[None, None, :], size=qry_feat.shape[-1])
+        qry_feat = qry_feat.reshape(qry_feat.shape[1], -1)
+        qry_lbl = qry_lbl.reshape(-1)
+
+        spt_imgs_orig = [] # before transform
+        spt_lbls_orig = [] # before transform
+        spt_imgs = []
+        spt_feats = []
+        spt_lbls = []
 
         for j in range(len(pair[0])):
-            img = cv2.imread(self.root+pair[0][j])
-            img = cv2.resize(img, self.img_size)
-            original_im1.append(img)
-            im1.append(np.asarray(cv2.imread(self.root+pair[0][j])[:,:,::-1], dtype=np.float32))
-            temp_lbl = cv2.imread(self.root+pair[0][j].replace('JPEGImages', self.prefix_lbl).replace('jpg', 'png') , 0)
-            temp_lbl = self.map_labels(temp_lbl, int(pair[-1]))
-            lbl1.append(np.asarray(temp_lbl, dtype=np.int32))
+            spt_imgs_orig_j = Image.open(self.root+pair[0][j])
+            spt_imgs_orig.append(spt_imgs_orig_j)
 
-            if self.is_transform:
-                im1[j], lbl1[j] = self.transform(im1[j], lbl1[j])
-        return im1, lbl1, im2, lbl2, original_im1, original_im2, int(pair[-1])#self.out['cls_ind']
+            spt_lbls_orig_j = cv2.imread(self.root+pair[0][j].replace('JPEGImages', self.prefix_lbl).replace('jpg', 'png') , 0)
+            spt_lbls_orig_j = np.asarray(spt_lbls_orig_j, dtype=np.int32)
+            spt_lbls_orig_j = self.map_labels(spt_lbls_orig_j, int(pair[-1]))
+            spt_lbls_orig_j = Image.fromarray(spt_lbls_orig_j)
+            spt_lbls_orig.append(spt_lbls_orig_j)
+
+            spt_trasnsformed = self.transform_sample({'image': spt_imgs_orig_j, 'label': spt_lbls_orig_j})
+            spt_imgs_j = spt_trasnsformed['image']
+            spt_lbls_j = spt_trasnsformed['label']
+            spt_imgs.append(spt_imgs_j)
+
+            spt_feats_j = self.deeplab_model.module.extract_pixel_feature(spt_imgs_j[None, :].to('cuda'))
+            spt_lbls_j = F.interpolate(spt_lbls_j[None, None, :], size=spt_feats_j.shape[-1])
+            spt_feats_j = spt_feats_j.reshape(spt_feats_j.shape[1], -1)
+            spt_lbls_j = spt_lbls_j.reshape(-1)
+            spt_feats.append(spt_feats_j)
+            spt_lbls.append(spt_lbls_j)
+
+        return spt_imgs, spt_feats, spt_lbls, qry_img, qry_feat, qry_lbl, spt_imgs_orig, spt_lbls_orig, qry_img_orig, qry_lbl_orig, int(pair[-1])
+        # return spt_imgs, spt_lbls, qry_img, qry_lbl, spt_imgs_orig, qry_img_orig, int(pair[-1])
+
+    # def __getitem__(self, index):
+    #     pair = self.oslsm_files[index]
+    #     #self.out = self.PLP.load_next_frame(try_mode=False)
+    #     original_im1 = []
+    #     im1 = []
+    #     lbl1= []
+
+    #     #original_im2 = self.out['second_img'][0]
+    #     original_im2 = cv2.imread(self.root+pair[1])
+    #     original_im2 = cv2.resize(original_im2, self.img_size)
+
+    #     im2 = np.asarray(cv2.imread(self.root+pair[1])[:,:,::-1], dtype=np.float32)
+    #     lbl2 = cv2.imread(self.root+pair[1].replace('JPEGImages', self.prefix_lbl).replace('jpg', 'png') , 0)
+    #     lbl2 = np.asarray(lbl2, dtype=np.int32)
+    #     lbl2 = self.map_labels(lbl2, int(pair[-1]))
+
+    #     im2, lbl2 = self.transform(im2, lbl2)
+
+    #     for j in range(len(pair[0])):
+    #         img = cv2.imread(self.root+pair[0][j])
+    #         img = cv2.resize(img, self.img_size)
+    #         original_im1.append(img)
+    #         im1.append(np.asarray(cv2.imread(self.root+pair[0][j])[:,:,::-1], dtype=np.float32))
+    #         temp_lbl = cv2.imread(self.root+pair[0][j].replace('JPEGImages', self.prefix_lbl).replace('jpg', 'png') , 0)
+    #         temp_lbl = self.map_labels(temp_lbl, int(pair[-1]))
+    #         lbl1.append(np.asarray(temp_lbl, dtype=np.int32))
+
+    #         if self.is_transform:
+    #             im1[j], lbl1[j] = self.transform(im1[j], lbl1[j])
+    #     return im1, lbl1, im2, lbl2, original_im1, original_im2, int(pair[-1])#self.out['cls_ind']
 
     def correct_im(self, im):
         im = (np.transpose(im, (0,2,3,1)))/255.
@@ -159,3 +218,12 @@ class pascalVOC5iLoader(pascalVOCLoader):
                 self.correct_im(self.out['second_img']),
                 self.out['second_label'][0],
                 self.out['deploy_info'])
+
+    def transform_sample(self, sample):
+        composed_transforms = transforms.Compose([
+            # tr_sample.FixScaleCrop(crop_size=self.args.crop_size),
+            tr_sample.FixedResize(size=self.args.base_size),
+            tr_sample.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            tr_sample.ToTensor()])
+
+        return composed_transforms(sample)

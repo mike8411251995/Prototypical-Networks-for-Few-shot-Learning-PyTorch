@@ -130,9 +130,6 @@ class FixedResize(object):
 
     def __call__(self, sample):
         img = sample
-
-        assert img.size == mask.size
-
         img = img.resize(self.size, Image.BILINEAR)
 
         return img

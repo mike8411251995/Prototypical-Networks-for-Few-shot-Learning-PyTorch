@@ -1,5 +1,6 @@
 import os
 from os.path import join as pjoin
+from pathlib import Path
 import collections
 import json
 import torch
@@ -8,6 +9,7 @@ import scipy.misc as m
 import scipy.io as io
 import matplotlib.pyplot as plt
 import glob
+import re
 
 from PIL import Image
 from tqdm import tqdm
@@ -72,10 +74,14 @@ class pascalVOC5iLoader(pascalVOCLoader):
         self.oslsm_files = self.parse_file('ptsemseg/loader/imgs_paths_%d_%d.txt'%(fold, k_shot),
                                            k_shot)
         self.prefix_lbl = 'SegmentationClass/pre_encoded/'
-        self.current_fold = fold
 
         self.args = args
         self.deeplab_model = deeplab_model
+        deeplab_model_name = re.search('pascal/(.*)/model_best', self.args.resume).group(1)
+        self.prefix_feat = 'PixelwiseFeatures/{}/'.format(deeplab_model_name)
+        
+        self.current_fold = fold
+
 
     def parse_file(self, pth_txt, k_shot):
         files = []
@@ -112,16 +118,20 @@ class pascalVOC5iLoader(pascalVOCLoader):
         return 1000 #len(self.PLP.db_interface.db_items)
 
     def map_labels(self, lbl, cls_idx):
-        ignore_classes = range(self.current_fold*5+1, (self.current_fold+1)*5+1)
-        class_count = 0
+        # ignore_classes = range(self.current_fold*5+1, (self.current_fold+1)*5+1)
+        # class_count = 0
+        # temp_lbl = lbl.copy()
+        # for c in range(21):
+        #     if c not in ignore_classes:
+        #         temp_lbl[lbl == c] = class_count
+        #         class_count += 1
+        #     elif c in ignore_classes and c!=cls_idx:
+        #         temp_lbl[lbl == c] = 0
+        # temp_lbl[lbl==cls_idx] = 16
+        # return temp_lbl
         temp_lbl = lbl.copy()
-        for c in range(21):
-            if c not in ignore_classes:
-                temp_lbl[lbl == c] = class_count
-                class_count += 1
-            elif c in ignore_classes and c!=cls_idx:
-                temp_lbl[lbl == c] = 0
-        temp_lbl[lbl==cls_idx] = 16
+        temp_lbl[lbl==cls_idx] = 1
+        temp_lbl[lbl!=cls_idx] = 0
         return temp_lbl
 
     def __getitem__(self, index):
@@ -138,7 +148,13 @@ class pascalVOC5iLoader(pascalVOCLoader):
         qry_img = qry_transformed['image']
         qry_lbl = qry_transformed['label']
 
-        qry_feat = self.deeplab_model.module.extract_pixel_feature(qry_img[None, :].to('cuda'))
+        qry_feat_file = self.root+pair[1].replace('JPEGImages', self.prefix_feat).replace('jpg', 'pt')
+        try:
+            qry_feat = torch.load(qry_feat_file)
+        except FileNotFoundError:
+            qry_feat = self.deeplab_model.module.extract_pixel_feature(qry_img[None, :].to('cuda'))
+            Path(qry_feat_file).parent.mkdir(parents=True, exist_ok=True)
+            torch.save(qry_feat, qry_feat_file)
         qry_lbl = F.interpolate(qry_lbl[None, None, :], size=qry_feat.shape[-1])
         qry_feat = qry_feat.reshape(qry_feat.shape[1], -1)
         qry_lbl = qry_lbl.reshape(-1)
@@ -148,6 +164,7 @@ class pascalVOC5iLoader(pascalVOCLoader):
         spt_imgs = []
         spt_feats = []
         spt_lbls = []
+        spt_masked = []
 
         for j in range(len(pair[0])):
             spt_imgs_orig_j = Image.open(self.root+pair[0][j])
@@ -155,6 +172,13 @@ class pascalVOC5iLoader(pascalVOCLoader):
 
             spt_lbls_orig_j = cv2.imread(self.root+pair[0][j].replace('JPEGImages', self.prefix_lbl).replace('jpg', 'png') , 0)
             spt_lbls_orig_j = np.asarray(spt_lbls_orig_j, dtype=np.int32)
+
+            spt_binary_j = (spt_lbls_orig_j == int(pair[-1]))
+            spt_binary_j = np.stack([spt_binary_j for _ in range(3)], axis=0).transpose(1, 2, 0)
+            spt_masked_j = np.multiply(np.asarray(spt_imgs_orig_j), spt_binary_j)
+            spt_masked_j = self.transform_image(Image.fromarray(spt_masked_j))
+            spt_masked.append(spt_masked_j)
+
             spt_lbls_orig_j = self.map_labels(spt_lbls_orig_j, int(pair[-1]))
             spt_lbls_orig_j = Image.fromarray(spt_lbls_orig_j)
             spt_lbls_orig.append(spt_lbls_orig_j)
@@ -164,14 +188,21 @@ class pascalVOC5iLoader(pascalVOCLoader):
             spt_lbls_j = spt_trasnsformed['label']
             spt_imgs.append(spt_imgs_j)
 
-            spt_feats_j = self.deeplab_model.module.extract_pixel_feature(spt_imgs_j[None, :].to('cuda'))
+            spt_feats_file_j = self.root+pair[0][j].replace('JPEGImages', self.prefix_feat).replace('jpg', 'pt')
+            try:
+                spt_feats_j = torch.load(spt_feats_file_j)
+            except FileNotFoundError:
+                spt_feats_j = self.deeplab_model.module.extract_pixel_feature(spt_imgs_j[None, :].to('cuda'))
+                Path(spt_feats_file_j).parent.mkdir(parents=True, exist_ok=True)
+                torch.save(spt_feats_j, spt_feats_file_j)
+
             spt_lbls_j = F.interpolate(spt_lbls_j[None, None, :], size=spt_feats_j.shape[-1])
             spt_feats_j = spt_feats_j.reshape(spt_feats_j.shape[1], -1)
             spt_lbls_j = spt_lbls_j.reshape(-1)
             spt_feats.append(spt_feats_j)
             spt_lbls.append(spt_lbls_j)
 
-        return spt_imgs, spt_feats, spt_lbls, qry_img, qry_feat, qry_lbl, spt_imgs_orig, spt_lbls_orig, qry_img_orig, qry_lbl_orig, int(pair[-1])
+        return spt_imgs, spt_feats, spt_lbls, spt_masked, qry_img, qry_feat, qry_lbl, spt_imgs_orig, spt_lbls_orig, qry_img_orig, qry_lbl_orig, int(pair[-1])
         # return spt_imgs, spt_lbls, qry_img, qry_lbl, spt_imgs_orig, qry_img_orig, int(pair[-1])
 
     # def __getitem__(self, index):
@@ -227,3 +258,12 @@ class pascalVOC5iLoader(pascalVOCLoader):
             tr_sample.ToTensor()])
 
         return composed_transforms(sample)
+    
+    def transform_image(self, image):
+        composed_transforms = transforms.Compose([
+            # tr_image.FixScaleCrop(crop_size=self.args.crop_size),
+            tr_image.FixedResize(size=self.args.base_size),
+            tr_image.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            tr_image.ToTensor()])
+
+        return composed_transforms(image)

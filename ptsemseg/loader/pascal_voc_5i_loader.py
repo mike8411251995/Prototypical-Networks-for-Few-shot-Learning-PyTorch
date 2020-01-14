@@ -33,6 +33,7 @@ class pascalVOC5iLoader(pascalVOCLoader):
         root,
         args,
         deeplab_model,
+        inverse=False,
         split="val",
         is_transform=False,
         img_size=512,
@@ -71,8 +72,12 @@ class pascalVOC5iLoader(pascalVOCLoader):
         dbi = ss_datalayer.DBInterface(profile, fold=fold, binary=binary)
         self.PLP = ss_datalayer.PairLoaderProcess(None, None, dbi, profile_copy)
 
-        self.oslsm_files = self.parse_file('ptsemseg/loader/imgs_paths_%d_%d.txt'%(fold, k_shot),
-                                           k_shot)
+        self.inverse = inverse
+        if self.inverse:
+            self.oslsm_files = self.parse_file('ptsemseg/loader/imgs_paths_%d_%d_inv.txt'%(fold, k_shot), k_shot)            
+        else:
+            self.oslsm_files = self.parse_file('ptsemseg/loader/imgs_paths_%d_%d.txt'%(fold, k_shot), k_shot)
+        
         self.prefix_lbl = 'SegmentationClass/pre_encoded/'
 
         self.args = args
@@ -115,7 +120,8 @@ class pascalVOC5iLoader(pascalVOCLoader):
         return dictionary
 
     def __len__(self):
-        return 1000 #len(self.PLP.db_interface.db_items)
+        return 3000 if self.inverse else 1000
+        #len(self.PLP.db_interface.db_items)
 
     def map_labels(self, lbl, cls_idx):
         # ignore_classes = range(self.current_fold*5+1, (self.current_fold+1)*5+1)
@@ -152,7 +158,7 @@ class pascalVOC5iLoader(pascalVOCLoader):
         try:
             qry_feat = torch.load(qry_feat_file)
         except FileNotFoundError:
-            qry_feat = self.deeplab_model.module.extract_pixel_feature(qry_img[None, :].to('cuda'))
+            qry_feat = self.deeplab_model.module.extract_pixel_feature(qry_img[None, :].to('cuda')).detach().cpu()
             Path(qry_feat_file).parent.mkdir(parents=True, exist_ok=True)
             torch.save(qry_feat, qry_feat_file)
         qry_lbl = F.interpolate(qry_lbl[None, None, :], size=qry_feat.shape[-1])
@@ -192,7 +198,7 @@ class pascalVOC5iLoader(pascalVOCLoader):
             try:
                 spt_feats_j = torch.load(spt_feats_file_j)
             except FileNotFoundError:
-                spt_feats_j = self.deeplab_model.module.extract_pixel_feature(spt_imgs_j[None, :].to('cuda'))
+                spt_feats_j = self.deeplab_model.module.extract_pixel_feature(spt_imgs_j[None, :].to('cuda')).detach().cpu()
                 Path(spt_feats_file_j).parent.mkdir(parents=True, exist_ok=True)
                 torch.save(spt_feats_j, spt_feats_file_j)
 

@@ -136,8 +136,8 @@ class pascalVOC5iLoader(pascalVOCLoader):
         # temp_lbl[lbl==cls_idx] = 16
         # return temp_lbl
         temp_lbl = lbl.copy()
-        temp_lbl[lbl==cls_idx] = 1
-        temp_lbl[lbl!=cls_idx] = 0
+        # temp_lbl[lbl==cls_idx] = 1
+        # temp_lbl[lbl!=cls_idx] = 0
         return temp_lbl
 
     def __getitem__(self, index):

@@ -34,53 +34,37 @@ def euclidean_dist(x, y):
     return torch.pow(x - y, 2).sum(2)
 
 
-def prototypical_loss(input, target, n_support):
-    '''
-    Inspired by https://github.com/jakesnell/prototypical-networks/blob/master/protonets/models/few_shot.py
-
-    Compute the barycentres by averaging the features of n_support
-    samples for each class in target, computes then the distances from each
-    samples' features to each one of the barycentres, computes the
-    log_probability for each n_query samples for each one of the current
-    classes, of appartaining to a class c, loss and accuracy are then computed
-    and returned
-    Args:
-    - input: the model output for a batch of samples
-    - target: ground truth for the above batch of samples
-    - n_support: number of samples to keep in account when computing
-      barycentres, for each one of the current classes
-    '''
-    target_cpu = target.to('cpu')
-    input_cpu = input.to('cpu')
+def prototypical_loss(spt_output, y_spt, qry_output, y_qry, class_id):
+    spt_output_cpu = spt_output.to('cpu')
+    y_spt_cpu = y_spt.to('cpu')
+    qry_output_cpu = qry_output.to('cpu')
+    y_qry_cpu = y_qry.to('cpu')
 
     def supp_idxs(c):
-        # FIXME when torch will support where as np
-        return target_cpu.eq(c).nonzero()[:n_support].squeeze(1)
+        return y_spt_cpu.eq(c).nonzero().squeeze(1)
 
-    # FIXME when torch.unique will be available on cuda too
-    classes = torch.unique(target_cpu)
+    classes = torch.tensor([0., class_id])
     n_classes = len(classes)
-    # FIXME when torch will support where as np
-    # assuming n_query, n_target constants
-    n_query = target_cpu.eq(classes[0].item()).sum().item() - n_support
 
     support_idxs = list(map(supp_idxs, classes))
 
-    prototypes = torch.stack([input_cpu[idx_list].mean(0) for idx_list in support_idxs])
-    # FIXME when torch will support where as np
-    query_idxs = torch.stack(list(map(lambda c: target_cpu.eq(c).nonzero()[n_support:], classes))).view(-1)
+    prototypes = torch.stack([spt_output_cpu[idx_list].mean(0) for idx_list in support_idxs])
+    query_idxs_foreground = y_qry_cpu.eq(class_id).nonzero().squeeze(1)
+    query_idxs_background = y_qry_cpu.eq(0).nonzero().squeeze(1)
 
-    query_samples = input.to('cpu')[query_idxs]
-    dists = euclidean_dist(query_samples, prototypes)
+    query_samples_foreground = qry_output_cpu[query_idxs_foreground]
+    query_samples_background = qry_output_cpu[query_idxs_background]
+    dists_foreground = euclidean_dist(query_samples_foreground, prototypes)
+    dists_background = euclidean_dist(query_samples_background, prototypes)
 
-    log_p_y = F.log_softmax(-dists, dim=1).view(n_classes, n_query, -1)
+    log_p_y_foreground = F.log_softmax(-dists_foreground, dim=1)
+    log_p_y_background = F.log_softmax(-dists_background, dim=1)
 
-    target_inds = torch.arange(0, n_classes)
-    target_inds = target_inds.view(n_classes, 1, 1)
-    target_inds = target_inds.expand(n_classes, n_query, 1).long()
+    loss_val = -log_p_y_foreground[:, 1].mean() + -log_p_y_background[:, 0].mean()
 
-    loss_val = -log_p_y.gather(2, target_inds).squeeze().view(-1).mean()
-    _, y_hat = log_p_y.max(2)
-    acc_val = y_hat.eq(target_inds.squeeze()).float().mean()
+    _, y_hat_foreground = log_p_y_foreground.max(1)
+    _, y_hat_background = log_p_y_background.max(1)
+    acc_val_foreground = y_hat_foreground.eq(1).float().mean()
+    acc_val_background = y_hat_background.eq(0).float().mean()
 
-    return loss_val,  acc_val
+    return loss_val, acc_val_foreground, acc_val_background
